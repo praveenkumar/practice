@@ -2,14 +2,20 @@ package main
 
 import (
 	"context"
-	"fmt"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+	"log"
+	"os"
+	"path/filepath"
 )
 
 func main() {
-	config, err := clientcmd.BuildConfigFromFlags("https://api.crc.testing:6443", "/home/prkumar/.kube/config")
+	dir, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalln(err)
+	}
+	config, err := clientcmd.BuildConfigFromFlags("https://api.crc.testing:6443", filepath.Join(dir, ".kube", "config"))
 	if err != nil {
 		panic(err.Error())
 	}
@@ -23,6 +29,6 @@ func main() {
 		panic(err.Error())
 	}
 	for _, namespace := range namespaces.Items {
-		fmt.Println(namespace.Name)
+		log.Println(namespace.Name)
 	}
 }
