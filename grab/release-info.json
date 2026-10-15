@@ -1,0 +1,13 @@
+{
+	"version": {
+		"crcVersion": "2.20.0",
+		"gitSha": "f3a947",
+		"openshiftVersion": "4.13.0",
+		"podmanVersion": "4.4.4"
+	},
+	"links": {
+	    "linux": "https://developers.redhat.com/content-gateway/file/pub/openshift-v4/clients/crc/2.20.0/crc-linux-amd64.tar.xz",
+	    "darwin": "https://developers.redhat.com/content-gateway/file/pub/openshift-v4/clients/crc/2.20.0/crc-macos-installer.pkg",
+	    "windows": "https://developers.redhat.com/content-gateway/file/pub/openshift-v4/clients/crc/2.20.0/crc-windows-installer.zip"
+	}
+}

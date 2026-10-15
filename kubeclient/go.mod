@@ -1,6 +1,6 @@
 module github.com/praveenkumar/practice/kubeclient
 
-go 1.19
+go 1.20
 
 require (
 	k8s.io/apimachinery v0.27.1
