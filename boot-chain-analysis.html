@@ -1,0 +1,690 @@
+<title>CRC VM Boot Chain</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: diagnostic report — stat tiles, one wide Gantt with swim lanes, a serialized
+   waterfall + annotated chain list, a ranked table, fix cards. Mono face carries the
+   systemd/journal vernacular (service names, timestamps); system sans carries prose. */
+:root {
+  --bg: #f9f9f7;            /* page plane */
+  --surface: #fcfcfb;       /* cards, chart surface */
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --rule: rgba(11, 11, 11, 0.10);
+  --accent: #2a78d6;
+  /* categorical series (validated reference palette, fixed slot order) */
+  --s-warmup: #2a78d6;      /* slot 1 blue  — waiting on OpenShift itself */
+  --s-idle:   #eb6834;      /* slot 2 orange — removable idle wait */
+  --s-custom: #1baf7a;      /* slot 3 aqua  — SNC config work */
+  --s-infra:  #eda100;      /* slot 4 yellow — base OS / infra */
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0d0d; --surface: #1a1a19;
+    --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --rule: rgba(255, 255, 255, 0.10);
+    --accent: #3987e5;
+    --s-warmup: #3987e5; --s-idle: #d95926; --s-custom: #199e70; --s-infra: #c98500;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d0d0d; --surface: #1a1a19;
+  --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --rule: rgba(255, 255, 255, 0.10);
+  --accent: #3987e5;
+  --s-warmup: #3987e5; --s-idle: #d95926; --s-custom: #199e70; --s-infra: #c98500;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--sans);
+  font-size: 15px; line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 56px;
+}
+.wrap { max-width: 1060px; margin: 0 auto; }
+.eyebrow { font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+h1 { font-size: 30px; line-height: 1.15; margin: 0 0 6px; letter-spacing: -0.01em; text-wrap: balance; }
+.sub { color: var(--ink-2); margin: 0 0 28px; max-width: 72ch; }
+.sub code, p code, td code, li code { font-family: var(--mono); font-size: 0.88em;
+  background: color-mix(in srgb, var(--ink) 6%, transparent); padding: 1px 5px; border-radius: 4px; }
+h2 { font-size: 19px; margin: 44px 0 4px; letter-spacing: -0.005em; }
+.h2sub { color: var(--ink-2); margin: 0 0 18px; max-width: 78ch; font-size: 14px; }
+
+/* stat tiles */
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.tile { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px;
+  padding: 14px 16px 12px; }
+.tile .v { font-size: 27px; font-weight: 650; letter-spacing: -0.01em; line-height: 1.1; }
+.tile .v small { font-size: 15px; font-weight: 500; color: var(--ink-2); }
+.tile .k { font-size: 12.5px; color: var(--ink-2); margin-top: 4px; line-height: 1.4; }
+.tile.hot { border-color: color-mix(in srgb, var(--s-idle) 55%, var(--rule)); }
+.tile.hot .v { color: var(--s-idle); }
+.footline { color: var(--ink-2); font-size: 13.5px; margin: 14px 2px 0; }
+
+/* chart shell */
+.card { background: var(--surface); border: 1px solid var(--rule); border-radius: 12px;
+  padding: 18px 18px 14px; }
+.scrollx { overflow-x: auto; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center;
+  font-size: 12.5px; color: var(--ink-2); margin: 0 0 12px; }
+.legend .li { display: inline-flex; align-items: center; gap: 7px; }
+.legend .sw { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+.legend .dash { width: 22px; height: 0; border-top: 2px dashed var(--muted); flex: none; }
+.legend .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink); flex: none; }
+svg text { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+svg .tlabel { fill: var(--ink); font-size: 11.5px; font-weight: 600; }
+svg .tlabel.plain { font-weight: 400; fill: var(--ink-2); }
+svg .lane { fill: var(--muted); font-size: 10.5px; letter-spacing: 0.13em; font-weight: 500; }
+svg .tick { fill: var(--muted); font-size: 10.5px; }
+svg .ref { fill: var(--muted); font-size: 10.5px; }
+svg .dur { fill: var(--ink-2); font-size: 10.5px; font-weight: 500; }
+svg .dur-in { fill: var(--ink); font-size: 10.5px; font-weight: 600; }
+svg .bar { cursor: default; }
+svg .bar:focus { outline: none; stroke: var(--ink); stroke-width: 1.6px; }
+svg .gline { stroke: var(--grid); stroke-width: 1px; }
+svg .chainline { stroke: var(--muted); stroke-width: 1.6px; stroke-dasharray: 3 4;
+  fill: none; opacity: 0.9; }
+
+/* tooltip */
+#tip { position: fixed; z-index: 40; max-width: 340px; background: var(--surface);
+  border: 1px solid var(--rule); border-radius: 10px; padding: 11px 13px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16); pointer-events: none; font-size: 12.5px;
+  line-height: 1.5; color: var(--ink-2); }
+#tip.h { display: none; }
+#tip .tt { font-family: var(--mono); font-weight: 600; color: var(--ink); font-size: 12.5px;
+  margin-bottom: 2px; }
+#tip .tw { font-family: var(--mono); font-size: 11.5px; color: var(--muted); margin-bottom: 6px; }
+#tip .chips { display: flex; gap: 6px; margin-bottom: 7px; flex-wrap: wrap; }
+.chip { display: inline-block; font-family: var(--mono); font-size: 10.5px; font-weight: 600;
+  padding: 2px 8px; border-radius: 99px; color: #fff; }
+.chip.crit { background: var(--ink); color: var(--surface); }
+
+/* chain list */
+ol.chain { list-style: none; margin: 18px 0 0; padding: 0 0 0 0;
+  border-left: 2px solid var(--grid); }
+ol.chain li { position: relative; padding: 0 0 16px 22px; }
+ol.chain li::before { content: ""; position: absolute; left: -5px; top: 6px; width: 8px;
+  height: 8px; border-radius: 50%; background: var(--surface); border: 2px solid var(--muted); }
+ol.chain li.crit::before { border-color: var(--ink); background: var(--ink); }
+.step { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.step .when { font-family: var(--mono); font-size: 12px; color: var(--muted);
+  font-variant-numeric: tabular-nums; }
+.step .name { font-family: var(--mono); font-size: 13.5px; font-weight: 600; }
+.step .d { font-family: var(--mono); font-size: 11px; font-weight: 600; padding: 1px 8px;
+  border-radius: 99px; color: #fff; }
+.step .why { flex-basis: 100%; color: var(--ink-2); font-size: 13.5px; margin-top: 1px;
+  max-width: 88ch; }
+
+/* table */
+.tblwrap { overflow-x: auto; margin-top: 6px; border: 1px solid var(--rule);
+  border-radius: 12px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; min-width: 860px; font-size: 13px; }
+th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--grid);
+  vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+th { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted);
+  font-weight: 600; font-family: var(--mono); }
+td.unit, td.time { font-family: var(--mono); font-size: 12px; white-space: nowrap;
+  font-variant-numeric: tabular-nums; }
+td.unit { font-weight: 500; }
+td.why { color: var(--ink-2); min-width: 300px; }
+td .pill { font-family: var(--mono); font-size: 10.5px; font-weight: 600; padding: 2px 8px;
+  border-radius: 99px; white-space: nowrap; }
+td .pill.c { background: color-mix(in srgb, var(--ink) 10%, transparent); color: var(--ink); }
+td .pill.p { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--ink-2); }
+td .pill.s { background: color-mix(in srgb, var(--muted) 10%, transparent); color: var(--muted); }
+
+/* fixes */
+.fixes { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.fix { background: var(--surface); border: 1px solid var(--rule); border-radius: 12px;
+  padding: 16px 18px 14px; }
+.fix .n { font-family: var(--mono); font-size: 11px; color: var(--muted); letter-spacing: 0.12em; }
+.fix h3 { margin: 4px 0 6px; font-size: 15px; line-height: 1.35; }
+.fix p { margin: 0; color: var(--ink-2); font-size: 13.5px; }
+.fix .save { display: inline-block; margin-top: 10px; font-family: var(--mono);
+  font-size: 11.5px; font-weight: 600; color: #fff; background: var(--s-idle);
+  padding: 3px 10px; border-radius: 99px; }
+.result { margin-top: 16px; padding: 13px 16px; border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  font-size: 14px; }
+.result strong { font-variant-numeric: tabular-nums; }
+
+/* footer */
+footer { margin-top: 44px; border-top: 1px solid var(--grid); padding-top: 16px;
+  color: var(--muted); font-size: 12.5px; line-height: 1.65; max-width: 88ch; }
+footer code { font-family: var(--mono); font-size: 11.5px; }
+
+@media (max-width: 860px) {
+  .tiles { grid-template-columns: 1fr 1fr; }
+  .fixes { grid-template-columns: 1fr; }
+  h1 { font-size: 25px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+</style>
+
+<div class="wrap">
+
+  <p class="eyebrow">SNC bundle · boot diagnostics</p>
+  <h1>CRC VM boot chain</h1>
+  <p class="sub">Boot of <code>2026-10-15 09:31 UTC</code> on the <code>crc</code> VM (KVM, user-mode
+  networking, self-sufficient bundle). Userspace startup took <strong>4m 40s</strong> — 4m 44s end-to-end
+  with kernel and initrd. systemd considered the VM "up" (<code>graphical.target</code>) after 51s; the
+  remaining 3m 50s is the SNC service chain bringing the OpenShift cluster up. The timeline below is
+  reconstructed from <code>journalctl</code>, <code>systemctl show</code> and <code>systemd-analyze</code>;
+  t=0 is the start of userspace.</p>
+
+  <div class="tiles">
+    <div class="tile">
+      <div class="v">4m 40s</div>
+      <div class="k">userspace boot — every custom service green at t+4:40</div>
+    </div>
+    <div class="tile hot">
+      <div class="v">90.5s</div>
+      <div class="k">tap0 DHCP timeouts — 45s ×2, serialized in front of kubelet. Nothing answers on tap0.</div>
+    </div>
+    <div class="tile hot">
+      <div class="v">70.5s</div>
+      <div class="k"><code>--minimum-stable-period=1m</code> confirmation in crc-cluster-status, after operators were already stable</div>
+    </div>
+    <div class="tile">
+      <div class="v">98.4s</div>
+      <div class="k">actual cluster warm-up on the critical path (API server, node, APIServices, operators)</div>
+    </div>
+  </div>
+  <p class="footline">161s of the 280s boot — <strong>57%</strong> — was idle waiting that a fix can remove.
+  No service failed and nothing restarted: every duration below is first-attempt execution time.</p>
+
+  <h2>Startup timeline</h2>
+  <p class="h2sub">Each bar is one service run, positioned at its real start and end. The dashed line is the
+  serial critical path — the chain of dependencies that set the total boot time. Hover any bar for what it
+  was doing.</p>
+  <div class="card">
+    <div class="legend" id="legend">
+      <span class="li"><span class="sw" style="background:var(--s-warmup)"></span>waiting on OpenShift itself</span>
+      <span class="li"><span class="sw" style="background:var(--s-idle)"></span>idle wait (removable)</span>
+      <span class="li"><span class="sw" style="background:var(--s-custom)"></span>SNC config work</span>
+      <span class="li"><span class="sw" style="background:var(--s-infra)"></span>base OS / infra</span>
+      <span class="li"><span class="dash"></span>critical path</span>
+      <span class="li"><span class="dot"></span>on critical path</span>
+    </div>
+    <div class="scrollx">
+      <svg id="gantt" viewBox="0 0 1080 566" width="100%" style="min-width:920px; display:block;"
+        role="img" aria-label="Gantt timeline of CRC VM boot services"></svg>
+    </div>
+  </div>
+
+  <h2>The serial chain</h2>
+  <p class="h2sub">The same boot flattened into the one dependency chain that determined its length —
+  11 steps, 280.4s end to end. Parallel work (cloud-init, the password job) is not on it.</p>
+  <div class="card">
+    <div class="scrollx">
+      <svg id="waterfall" viewBox="0 0 1080 96" width="100%" style="min-width:920px; display:block;"
+        role="img" aria-label="Serialized critical chain as one stacked bar"></svg>
+    </div>
+    <ol class="chain">
+      <li class="crit"><div class="step">
+        <span class="when">t+0:00 → 0:04</span><span class="name">systemd → NetworkManager</span>
+        <span class="d" style="background:var(--s-infra)">4.0s</span>
+        <span class="why">Userspace start to NM running. Unremarkable.</span></div></li>
+      <li class="crit"><div class="step">
+        <span class="when">t+0:04 → 0:50</span><span class="name">NetworkManager-wait-online #1</span>
+        <span class="d" style="background:var(--s-idle)">45.4s</span>
+        <span class="why">NM activates the <code>tap0</code> connection (autoconnect, ipv4.method=auto).
+        tap0 is a persistent tun with NO-CARRIER and no DHCP server behind it, so the DHCP transaction
+        runs its full 45-second timeout. NM reports <em>startup complete</em> only when the activation
+        attempt concludes — so <code>nm-online</code> blocks the whole time. This gates
+        <code>network-online.target</code>, and everything behind it.</span></div></li>
+      <li class="crit"><div class="step">
+        <span class="when">t+0:50 → 0:56</span><span class="name">ovs-configuration + crc-dnsmasq</span>
+        <span class="d" style="background:var(--s-infra)">6.9s</span>
+        <span class="why">configure-ovs.sh sets up the br-ex OVS bridge; crc-dnsmasq detects user-mode
+        networking and skips all dnsmasq configuration — but its <code>ExecStartPost</code> restarts
+        NetworkManager anyway.</span></div></li>
+      <li class="crit"><div class="step">
+        <span class="when">t+0:56 → 1:42</span><span class="name">NetworkManager-wait-online #2</span>
+        <span class="d" style="background:var(--s-idle)">45.1s</span>
+        <span class="why">The NM restart replays the same tap0 DHCP timeout. This one gates
+        <code>kubelet-dependencies.target</code> → crio → kubelet: nothing cluster-related is allowed to
+        start until it expires. Of the first 103 seconds of boot, ~90 are these two timeouts.</span></div></li>
+      <li class="crit"><div class="step">
+        <span class="when">t+1:42 → 1:44</span><span class="name">kubelet-dependencies → kubelet</span>
+        <span class="d" style="background:var(--s-infra)">2.0s</span>
+        <span class="why">Target reached, kubelet starts, begins pulling and launching the static
+        control-plane pods. (ovs-configuration runs a third time here and restarts NM once more —
+        wait-online #3 burns another 45s, but hidden in parallel.)</span></div></li>
+      <li class="crit"><div class="step">
+        <span class="when">t+1:44 → 2:02</span><span class="name">crc-wait-apiserver-up</span>
+        <span class="d" style="background:var(--s-warmup)">18.2s</span>
+        <span class="why">Polls <code>oc get node</code> until the API server answers. This is the API
+        server container being pulled and started — genuine work.</span></div></li>
+      <li class="crit"><div class="step">
+        <span class="when">t+2:02 → 2:15</span><span class="name">crc-wait-node-ready</span>
+        <span class="d" style="background:var(--s-warmup)">13.2s</span>
+        <span class="why">Polls node status every 2s until Ready — CNI/OVN wiring itself up and the node
+        registering.</span></div></li>
+      <li class="crit"><div class="step">
+        <span class="when">t+2:15 → 2:42</span><span class="name">ocp-wait-apiservices-available</span>
+        <span class="d" style="background:var(--s-warmup)">27.0s</span>
+        <span class="why">Polls every 5s until every aggregated APIService reports Available — the
+        authentication, console and friends registering against the API server.</span></div></li>
+      <li class="crit"><div class="step">
+        <span class="when">t+2:42 → 2:50</span><span class="name">ocp-cluster-ca</span>
+        <span class="d" style="background:var(--s-custom)">8.0s</span>
+        <span class="why">Two RSA-4096 key generations, an apiserver patch, a kubeconfig rewrite and a
+        handful of oc round-trips.</span></div></li>
+      <li class="crit"><div class="step">
+        <span class="when">t+2:50 → 3:30</span><span class="name">crc-cluster-status — stabilize</span>
+        <span class="d" style="background:var(--s-warmup)">40.0s</span>
+        <span class="why"><code>oc adm wait-for-stable-cluster</code>: authentication, console,
+        image-registry and ingress operators settle. All stable at t+3:30.</span></div></li>
+      <li class="crit"><div class="step">
+        <span class="when">t+3:30 → 4:40</span><span class="name">crc-cluster-status — confirm</span>
+        <span class="d" style="background:var(--s-idle)">70.5s</span>
+        <span class="why">…and then the mandatory <code>--minimum-stable-period=1m</code> keeps polling a
+        cluster that is already healthy, before the kubeadmin login and the
+        <code>/tmp/.crc-cluster-ready</code> marker. Last line of the journal: "All done after 110
+        seconds."</span></div></li>
+    </ol>
+  </div>
+
+  <h2>Service by service</h2>
+  <p class="h2sub">Every unit that mattered, ranked by where they sit in the boot. Durations are
+  ExecStart → exit from <code>systemctl show</code> and <code>journalctl -b</code>; starts are offsets
+  from t=0.</p>
+  <div class="tblwrap">
+    <table>
+      <thead><tr><th>Unit</th><th>Starts</th><th>Runs</th><th>Path</th><th>What it was doing</th></tr></thead>
+      <tbody>
+        <tr><td class="unit">NetworkManager-wait-online #1</td><td class="time">t+4s</td><td class="time">45.4s</td>
+          <td><span class="pill c">critical</span></td>
+          <td class="why">tap0 DHCP with no server — 45s timeout gates network-online.target. NM journal: <code>dhcp4 (tap0): activation: beginning transaction (timeout in 45 seconds)</code>, then <code>manager: startup complete</code> the moment it fails.</td></tr>
+        <tr><td class="unit">NetworkManager-wait-online #2</td><td class="time">t+56s</td><td class="time">45.1s</td>
+          <td><span class="pill c">critical</span></td>
+          <td class="why">Same timeout again after crc-dnsmasq's ExecStartPost restarted NM. Gates kubelet-dependencies.target → kubelet → the entire cluster.</td></tr>
+        <tr><td class="unit">crc-cluster-status</td><td class="time">t+170s</td><td class="time">110.5s</td>
+          <td><span class="pill c">critical</span></td>
+          <td class="why">The longest single service. 40s for the four clusteroperators to stabilize, then 70s of mandatory <code>--minimum-stable-period=1m</code> confirmation on an already-stable cluster, then kubeadmin login and the ready marker.</td></tr>
+        <tr><td class="unit">ocp-wait-apiservices-available</td><td class="time">t+135s</td><td class="time">27.0s</td>
+          <td><span class="pill c">critical</span></td>
+          <td class="why">5s-interval polling until all aggregated APIServices are Available. Genuine warm-up.</td></tr>
+        <tr><td class="unit">crc-wait-apiserver-up</td><td class="time">t+104s</td><td class="time">18.2s</td>
+          <td><span class="pill c">critical</span></td>
+          <td class="why">Waits for the API server ("Resource 'node' found after 2 tries (18 seconds)"). Genuine: kubelet starting control-plane static pods.</td></tr>
+        <tr><td class="unit">crc-wait-node-ready</td><td class="time">t+122s</td><td class="time">13.2s</td>
+          <td><span class="pill c">critical</span></td>
+          <td class="why">2s-interval polling until node/crc is Ready. CNI/OVN settling.</td></tr>
+        <tr><td class="unit">ocp-cluster-ca</td><td class="time">t+162s</td><td class="time">8.0s</td>
+          <td><span class="pill c">critical</span></td>
+          <td class="why">RSA-4096 CA + client cert, apiserver clientCA patch, kubeconfig rewrite, two configmaps.</td></tr>
+        <tr><td class="unit">ovs-configuration (×3 runs)</td><td class="time">t+53s</td><td class="time">~5s</td>
+          <td><span class="pill c">critical</span></td>
+          <td class="why">br-ex OVS setup. Run 2 pulled by crc-dnsmasq ExecStartPre; run 3 by the kubelet-dependencies transaction — which restarts NM a third time (wait-online #3: 45s, hidden in parallel).</td></tr>
+        <tr><td class="unit">crc-dnsmasq</td><td class="time">t+56s</td><td class="time">0.8s</td>
+          <td><span class="pill c">critical</span></td>
+          <td class="why">"network-mode 'user' detected: skipping dnsmasq configuration" — then ExecStartPost restarted NM and dnsmasq anyway. The restart, not the config, cost 45s.</td></tr>
+        <tr><td class="unit">kubelet</td><td class="time">t+103s</td><td class="time">—</td>
+          <td><span class="pill c">critical</span></td>
+          <td class="why">Started by kubelet-dependencies.target; long-running. Everything from here on is the cluster coming up.</td></tr>
+        <tr><td class="unit">cloud-final (cloud-init)</td><td class="time">t+51s</td><td class="time">52.4s</td>
+          <td><span class="pill p">parallel</span></td>
+          <td class="why">Final modules: enables kubelet, regenerates SSH host keys (RSA-3072 fingerprints land at the very end). Finished at t+1:44, 16s before the API server answered — never the long pole.</td></tr>
+        <tr><td class="unit">ocp-userpasswords</td><td class="time">t+122s</td><td class="time">36.2s</td>
+          <td><span class="pill p">parallel</span></td>
+          <td class="why">31.8s of it is <code>podman pull registry.access.redhat.com/ubi10/httpd-24</code> from the internet at boot, then two htpasswd container runs and the secret apply. Cleared the critical path by only 4s — on a slower link it becomes the long pole.</td></tr>
+        <tr><td class="unit">ocp-clusterid · ocp-mco-sshkey · crc-pullsecret</td><td class="time">t+122s</td><td class="time">~1.2s</td>
+          <td><span class="pill p">parallel</span></td>
+          <td class="why">Three quick oc patches, all done in about a second.</td></tr>
+        <tr><td class="unit">NetworkManager-wait-online #3</td><td class="time">t+103s</td><td class="time">45.1s</td>
+          <td><span class="pill p">hidden</span></td>
+          <td class="why">NM restarted by ovs-configuration run 3 → a third tap0 DHCP timeout, overlapped with control-plane startup. Free today, not on a slower machine.</td></tr>
+        <tr><td class="unit">crc-routes-controller</td><td class="time">—</td><td class="time">skipped</td>
+          <td><span class="pill s">skipped</span></td>
+          <td class="why">ExecCondition (crc-user-mode-networking.sh): self-sufficient bundle → not the user-mode path, unit skipped cleanly.</td></tr>
+        <tr><td class="unit">ocp-custom-domain</td><td class="time">—</td><td class="time">skipped</td>
+          <td><span class="pill s">skipped</span></td>
+          <td class="why">ConditionPathExists: /opt/crc/eip is absent on this VM.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>What to fix</h2>
+  <p class="h2sub">In order of return. The first two are the same root cause — a dead tap0 connection that
+  every NM start is forced to wait out.</p>
+  <div class="fixes">
+    <div class="fix">
+      <div class="n">FIX 1</div>
+      <h3>Deploy the KVM-aware crc-needs-tap.sh</h3>
+      <p>This VM still runs the pre-fix script: <code>systemd-detect-virt</code> reports <code>kvm</code>,
+      the script answers "Need tap0", so <code>crc-check-tap.service</code> leaves
+      <code>/etc/NetworkManager/system-connections/tap0.nmconnection</code> in place. Commit
+      <code>9258f92</code> on your <code>ignore_kvm</code> branch adds the <code>kvm</code> case — this VM
+      predates it. Rebuild the bundle from that branch, or hot-patch the script on the VM and run
+      <code>crc-conditionally-disable-tap.sh</code> once.</p>
+      <span class="save">−90s · both serialized DHCP timeouts</span>
+    </div>
+    <div class="fix">
+      <div class="n">FIX 2</div>
+      <h3>Don't restart NetworkManager when dnsmasq config was skipped</h3>
+      <p><code>crc-dnsmasq.service</code> restarts NM and dnsmasq in <code>ExecStartPost</code>
+      unconditionally — even when <code>crc-dnsmasq.sh</code> exited immediately because user-mode
+      networking needs no dnsmasq. Guard the restarts on having actually configured something. That single
+      restart is what serialized a second 45s wait in front of kubelet (and spawned a third).</p>
+      <span class="save">−45s today · removes wait-online #2 and #3</span>
+    </div>
+    <div class="fix">
+      <div class="n">FIX 3</div>
+      <h3>Preload ubi10/httpd-24 into the bundle image</h3>
+      <p><code>ocp-userpasswords.sh</code> runs <code>podman pull registry.access.redhat.com/ubi10/httpd-24</code>
+      on every boot — 31.8s of network fetch inside a boot path. Pre-pull the image in
+      <code>createdisk.sh</code> so the password job only runs the two htpasswd containers locally.</p>
+      <span class="save">−32s of risk on a parallel branch</span>
+    </div>
+    <div class="fix">
+      <div class="n">FIX 4</div>
+      <h3>Shorten the stability confirmation window</h3>
+      <p><code>crc-cluster-status.sh</code> runs <code>oc adm wait-for-stable-cluster
+      --minimum-stable-period=1m --timeout=10m</code>. Operators were fully stable at t+3:30; the marker
+      landed at t+4:40. A 30s minimum period — or trusting the per-operator stability timestamps already
+      in the journal — would cut most of the tail.</p>
+      <span class="save">−35s · policy tradeoff</span>
+    </div>
+  </div>
+  <div class="result">Fixes 1 + 2 alone take the boot from <strong>4m 40s</strong> to about
+  <strong>3m 10s</strong>; all four land near <strong>2m 30s</strong>. Fixes 1–3 remove waits without
+  touching any cluster logic — the cluster warm-up itself (98s) stays as is.</div>
+
+  <footer>
+    <p><strong>Method.</strong> t=0 is the start of userspace (09:31:06.1 UTC); timestamps come from
+    <code>systemd-analyze time / blame / critical-chain</code>, <code>systemctl show -p
+    ExecMainStartTimestamp,ExecMainExitTimestamp,NRestarts</code> for each unit, and
+    <code>journalctl -b -o short-precise</code> per unit. <code>systemd-analyze</code> puts userspace at
+    280.385s, which is crc-cluster-status finishing at 09:35:46.4 — the chain above sums to 280.4s. All
+    units ran clean on first attempt (NRestarts=0, Result=success). Durations are rounded to 0.1s from
+    journal timestamps; the two NM restarts are attributed by their journal position between
+    crc-dnsmasq's ExecStartPost and ovs-configuration's third run. tap0 state confirmed via
+    <code>nmcli</code> (connection <code>tun</code>, <code>ipv4.method=auto</code>, device NO-CARRIER,
+    persist on) and the deployed <code>/usr/local/bin/crc-needs-tap.sh</code> (no <code>kvm</code> case).
+    Kernel 1.2s + initrd 2.4s precede t=0 (4m 44.0s end-to-end).</p>
+  </footer>
+
+</div>
+
+<div id="tip" class="h" role="tooltip"></div>
+
+<script>
+(function () {
+  "use strict";
+  var CATS = {
+    warmup: { color: "var(--s-warmup)", name: "waiting on OpenShift" },
+    idle:   { color: "var(--s-idle)",   name: "idle wait (removable)" },
+    custom: { color: "var(--s-custom)", name: "SNC config work" },
+    infra:  { color: "var(--s-infra)",  name: "base OS / infra" }
+  };
+
+  // t in seconds from userspace start (09:31:06.1 UTC)
+  var ROWS = [
+    { lane: 0, label: "NetworkManager-wait-online #1", crit: true,
+      segs: [{ s: 4.0, e: 49.5, cat: "idle" }],
+      why: "tap0 activates with DHCP (45s timeout) and nothing answers — the device is a persistent tun with NO-CARRIER. NM reports 'startup complete' only when the attempt fails, so nm-online blocks the full 45s. Gates network-online.target." },
+    { lane: 0, label: "cloud-init / cloud-final", crit: false,
+      segs: [{ s: 51.3, e: 103.7, cat: "infra" }],
+      why: "Cloud-init final stage: enables kubelet, runs modules, regenerates SSH host keys (RSA-3072). Parallel to the network waits; finished 16s before the API server answered." },
+    { lane: 0, label: "ovs-configuration ×3", crit: false,
+      segs: [{ s: 52.8, e: 55.5, cat: "infra" }, { s: 55.7, e: 56.2, cat: "infra" }, { s: 101.5, e: 102.6, cat: "infra" }],
+      why: "configure-ovs.sh builds the br-ex OVS bridge. Run 2 pulled in by crc-dnsmasq ExecStartPre; run 3 by the kubelet-dependencies transaction — and run 3 restarts NetworkManager, spawning wait-online #3." },
+    { lane: 0, label: "crc-dnsmasq", crit: false,
+      segs: [{ s: 55.6, e: 56.4, cat: "custom" }],
+      why: "User-mode networking detected: 'skipping dnsmasq configuration'. But ExecStartPost still restarted NetworkManager and dnsmasq — that restart serialized the second 45s tap0 timeout in front of kubelet." },
+    { lane: 0, label: "NetworkManager-wait-online #2", crit: true,
+      segs: [{ s: 56.4, e: 101.5, cat: "idle" }],
+      why: "tap0 DHCP timeout, round two, after the NM restart. Gates kubelet-dependencies.target → crio → kubelet: no cluster work may start until it expires." },
+    { lane: 0, label: "NetworkManager-wait-online #3", crit: false,
+      segs: [{ s: 102.6, e: 147.7, cat: "idle" }],
+      why: "Round three, after ovs-configuration restarted NM. Overlapped kubelet and control-plane startup, so it cost no wall time on this boot — it would on a slower one." },
+    { lane: 1, label: "kubelet", crit: true, marker: 102.7,
+      segs: [],
+      why: "Started once kubelet-dependencies.target was reachable — i.e. after wait-online #2 expired. Long-running; pulls and starts the static control-plane pods." },
+    { lane: 1, label: "crc-wait-apiserver-up", crit: true,
+      segs: [{ s: 103.5, e: 121.7, cat: "warmup" }],
+      why: "Polls 'oc get node' until the API server answers (18.2s). The API server container being pulled and started by kubelet — genuine work." },
+    { lane: 1, label: "crc-wait-node-ready", crit: true,
+      segs: [{ s: 121.7, e: 134.9, cat: "warmup" }],
+      why: "Polls node status every 2s until Ready — CNI/OVN wiring up, node registering." },
+    { lane: 2, label: "ocp-userpasswords", crit: false,
+      segs: [{ s: 121.7, e: 153.5, cat: "custom", note: "pull 31.8s" }, { s: 153.5, e: 157.9, cat: "custom", note: "3.3s" }],
+      why: "31.8s pulling registry.access.redhat.com/ubi10/httpd-24 from the internet, then two htpasswd container runs and the htpass-secret apply. Parallel — cleared the critical path by 4s." },
+    { lane: 2, label: "clusterid · sshkey · pullsecret", crit: false,
+      segs: [{ s: 121.7, e: 122.9, cat: "custom" }],
+      why: "Three quick oc patches (~0.4s each)." },
+    { lane: 2, label: "ocp-wait-apiservices-available", crit: true,
+      segs: [{ s: 134.9, e: 161.9, cat: "warmup" }],
+      why: "Polls every 5s until every aggregated APIService reports Available — authentication, console et al. registering." },
+    { lane: 2, label: "ocp-cluster-ca", crit: true,
+      segs: [{ s: 161.9, e: 169.9, cat: "custom" }],
+      why: "Two RSA-4096 generations, apiserver clientCA patch, kubeconfig rewrite, two configmaps. ~8s of openssl + oc round-trips." },
+    { lane: 2, label: "crc-cluster-status", crit: true,
+      segs: [{ s: 169.9, e: 209.9, cat: "warmup", note: "stabilize 40s" }, { s: 209.9, e: 280.4, cat: "idle", note: "min-stable-period 70s" }],
+      why: "oc adm wait-for-stable-cluster --minimum-stable-period=1m: authentication/console/image-registry/ingress stabilized after 40s, then the mandatory confirmation window burned 70s more before kubeadmin login and /tmp/.crc-cluster-ready." }
+  ];
+
+  var LANES = ["NETWORK & EARLY BOOT", "KUBELET & CONTROL PLANE", "SNC CUSTOM SERVICES"];
+  var T_MAX = 285, ML = 246, MR = 14, W = 1080;
+  var PW = W - ML - MR;                 // plot width
+  function x(t) { return ML + (t / T_MAX) * PW; }
+  function fmt(t) {
+    var m = Math.floor(t / 60), s = Math.round(t % 60);
+    return m + ":" + (s < 10 ? "0" : "") + s;
+  }
+  function el(n, attrs, parent) {
+    var e = document.createElementNS("http://www.w3.org/2000/svg", n);
+    for (var k in attrs) { e.setAttribute(k, attrs[k]); }
+    if (parent) { parent.appendChild(e); }
+    return e;
+  }
+
+  // ---- geometry ----
+  var RH = 26, LH = 30, TOP = 34, BOT = 30;
+  var laneRow = [0, 0, 0];
+  ROWS.forEach(function (r) { laneRow[r.lane]++; });
+  var H = TOP + BOT + 3 * LH + ROWS.length * RH;
+  var gantt = document.getElementById("gantt");
+  gantt.setAttribute("viewBox", "0 0 " + W + " " + H);
+
+  // gridlines + ticks
+  for (var t = 0; t <= 270; t += 30) {
+    el("line", { x1: x(t), y1: TOP - 6, x2: x(t), y2: H - BOT, class: "gline" }, gantt);
+    var tk = el("text", { x: x(t), y: H - BOT + 16, "text-anchor": "middle", class: "tick" }, gantt);
+    tk.textContent = fmt(t);
+  }
+  var base = el("line", { x1: ML, y1: H - BOT, x2: x(T_MAX), y2: H - BOT, stroke: "var(--grid)" }, gantt);
+  var tke = el("text", { x: x(T_MAX), y: H - BOT + 16, "text-anchor": "end", class: "tick" }, gantt);
+  tke.textContent = "4:45";
+
+  // lane headers + row y positions
+  var y = TOP;
+  var rowY = {};
+  LANES.forEach(function (name, li) {
+    var lt = el("text", { x: ML, y: y + 14, class: "lane" }, gantt);
+    lt.textContent = name;
+    y += LH;
+    ROWS.forEach(function (r) {
+      if (r.lane !== li) { return; }
+      rowY[r.label] = y;
+      var ln = el("line", { x1: ML, y1: y + RH - 4, x2: x(T_MAX), y2: y + RH - 4, class: "gline", opacity: 0.5 }, gantt);
+      y += RH;
+    });
+  });
+
+  // reference lines: graphical.target + cluster ready
+  [[50.7, "graphical.target · 0:51"], [280.4, "cluster ready · 4:40"]].forEach(function (ref) {
+    var gx = x(ref[0]);
+    el("line", { x1: gx, y1: TOP - 4, x2: gx, y2: H - BOT, stroke: "var(--muted)",
+      "stroke-width": 1, "stroke-dasharray": "2 3", opacity: 0.75 }, gantt);
+    var anchor = ref[0] > 200 ? "end" : "start";
+    var rt = el("text", { x: gx + (anchor === "end" ? -5 : 5), y: TOP - 10, "text-anchor": anchor, class: "ref" }, gantt);
+    rt.textContent = ref[1];
+  });
+
+  // ---- tooltip ----
+  var tip = document.getElementById("tip");
+  function showTip(evt, r, seg) {
+    var segTxt = seg ? " · segment: " + (seg.note || Math.round((seg.e - seg.s) * 10) / 10 + "s") : "";
+    tip.innerHTML = "";
+    var tt = document.createElement("div"); tt.className = "tt"; tt.textContent = r.label;
+    var tw = document.createElement("div"); tw.className = "tw";
+    var segs = r.segs.length ? r.segs : [{ s: r.marker, e: r.marker }];
+    tw.textContent = "t+" + fmt(segs[0].s) + " → t+" + fmt(segs[segs.length - 1].e) + segTxt;
+    var chips = document.createElement("div"); chips.className = "chips";
+    var c1 = document.createElement("span"); c1.className = "chip";
+    var cat = CATS[seg ? seg.cat : "infra"];
+    c1.style.background = cat.color; c1.textContent = cat.name;
+    chips.appendChild(c1);
+    if (r.crit) { var c2 = document.createElement("span"); c2.className = "chip crit"; c2.textContent = "critical path"; chips.appendChild(c2); }
+    var why = document.createElement("div"); why.textContent = r.why;
+    tip.appendChild(tt); tip.appendChild(tw); tip.appendChild(chips); tip.appendChild(why);
+    tip.classList.remove("h");
+    var pad = 14, vw = window.innerWidth;
+    var px = evt.clientX + pad, py = evt.clientY + pad;
+    var rct = tip.getBoundingClientRect();
+    if (px + rct.width > vw - 8) { px = Math.max(8, evt.clientX - rct.width - pad); }
+    if (py + rct.height > window.innerHeight - 8) { py = Math.max(8, window.innerHeight - rct.height - pad); }
+    tip.style.left = px + "px"; tip.style.top = py + "px";
+  }
+  function hideTip() { tip.classList.add("h"); }
+
+  // ---- row labels + bars ----
+  ROWS.forEach(function (r) {
+    var ry = rowY[r.label];
+    var cy = ry + (RH - 8) / 2;
+    // label
+    if (r.crit) {
+      el("circle", { cx: 236, cy: ry + 9, r: 3, fill: "var(--ink)" }, gantt);
+    }
+    var lbl = el("text", { x: 228, y: ry + 13, "text-anchor": "end", class: "tlabel" + (r.crit ? "" : " plain") }, gantt);
+    lbl.textContent = r.label;
+    // marker row (kubelet)
+    if (r.marker !== undefined) {
+      var mkc = el("circle", { cx: x(r.marker), cy: cy, r: 5, fill: "var(--s-infra)", stroke: "var(--ink)", "stroke-width": 1.2, class: "bar", tabindex: 0 }, gantt);
+      hook(mkc, r, null);
+      var mk = el("text", { x: x(r.marker) + 10, y: cy + 4, class: "dur" }, gantt);
+      mk.textContent = "starts";
+      return;
+    }
+    r.segs.forEach(function (seg, i) {
+      var x1 = x(seg.s), x2 = x(seg.e), wpx = Math.max(x2 - x1, 3);
+      var rect = el("rect", { x: x1, y: ry + 3, width: wpx, height: RH - 11, rx: 3,
+        fill: CATS[seg.cat].color, class: "bar", tabindex: 0 }, gantt);
+      hook(rect, r, seg);
+      // duration label: right of the bar, unless it would collide with a following
+      // segment or run off the plot — then inside if it fits, else tooltip-only
+      var isLast = i === r.segs.length - 1;
+      var d = Math.round((seg.e - seg.s) * 10) / 10;
+      var txt = seg.note || (d >= 1 ? d + "s" : "<1s");
+      var est = txt.length * 6.5;
+      var place = null;
+      if (!isLast) {
+        if (wpx > est + 12) { place = "in"; }
+      } else if (x2 + 6 + est > x(T_MAX) - 2) {
+        if (wpx > est + 12) { place = "in"; } else { place = "out"; }
+      } else { place = "out"; }
+      if (place) {
+        var inside = place === "in";
+        var dt = el("text", { x: inside ? x2 - 5 : x2 + 6, y: ry + 13,
+          "text-anchor": inside ? "end" : "start", class: inside ? "dur-in" : "dur" }, gantt);
+        dt.textContent = txt;
+      }
+      // divider between segments
+      if (i < r.segs.length - 1) {
+        el("line", { x1: x2, y1: ry + 3, x2: x2, y2: ry + RH - 8, stroke: "var(--surface)", "stroke-width": 1.5 }, gantt);
+      }
+    });
+  });
+  function hook(node, r, seg) {
+    node.addEventListener("mouseenter", function (e) { showTip(e, r, seg); });
+    node.addEventListener("mousemove", function (e) { showTip(e, r, seg); });
+    node.addEventListener("mouseleave", hideTip);
+    node.addEventListener("focus", function (e) { showTip(e, r, seg); });
+    node.addEventListener("blur", hideTip);
+  }
+
+  // ---- critical path connector ----
+  var chain = [
+    ["NetworkManager-wait-online #1", "end"],
+    ["NetworkManager-wait-online #2", "start"],
+    ["NetworkManager-wait-online #2", "end"],
+    ["kubelet", "marker"],
+    ["crc-wait-apiserver-up", "start"],
+    ["crc-wait-apiserver-up", "end"],
+    ["crc-wait-node-ready", "start"],
+    ["crc-wait-node-ready", "end"],
+    ["ocp-wait-apiservices-available", "start"],
+    ["ocp-wait-apiservices-available", "end"],
+    ["ocp-cluster-ca", "start"],
+    ["ocp-cluster-ca", "end"],
+    ["crc-cluster-status", "start"]
+  ];
+  var pts = chain.map(function (c) {
+    var r = ROWS.filter(function (q) { return q.label === c[0]; })[0];
+    var segs = r.segs.length ? r.segs : [{ s: r.marker, e: r.marker }];
+    var t = (c[1] === "start" || c[1] === "marker") ? segs[0].s : segs[segs.length - 1].e;
+    var cy = rowY[r.label] + (RH - 8) / 2;
+    return [x(t), cy];
+  });
+  var dstr = "M" + pts[0][0] + " " + pts[0][1];
+  for (var i = 1; i < pts.length; i++) {
+    dstr += " L" + pts[i][0] + " " + pts[i - 1][1] + " L" + pts[i][0] + " " + pts[i][1];
+  }
+  el("path", { d: dstr, class: "chainline" }, gantt);
+
+  // ---- waterfall ----
+  var WF = [
+    { s: 0, e: 4.0, cat: "infra", label: "boot 4.0s" },
+    { s: 4.0, e: 49.5, cat: "idle", label: "tap0 DHCP 45.4s" },
+    { s: 49.5, e: 55.6, cat: "infra", label: "ovs" },
+    { s: 55.6, e: 56.4, cat: "custom", label: "" },
+    { s: 56.4, e: 101.5, cat: "idle", label: "tap0 DHCP 45.1s" },
+    { s: 101.5, e: 103.5, cat: "infra", label: "" },
+    { s: 103.5, e: 161.9, cat: "warmup", label: "control plane 58.4s" },
+    { s: 161.9, e: 169.9, cat: "custom", label: "CA 8s" },
+    { s: 169.9, e: 209.9, cat: "warmup", label: "operators 40s" },
+    { s: 209.9, e: 280.4, cat: "idle", label: "min-stable-period 70.5s" }
+  ];
+  var wf = document.getElementById("waterfall");
+  var WBARY = 26, WBH = 26;
+  var axis = el("line", { x1: ML, y1: WBARY + WBH, x2: x(T_MAX), y2: WBARY + WBH, stroke: "var(--grid)" }, wf);
+  [0, 60, 120, 180, 240].forEach(function (t) {
+    el("line", { x1: x(t), y1: WBARY - 4, x2: x(t), y2: WBARY + WBH, class: "gline" }, wf);
+    var wt = el("text", { x: x(t), y: WBARY + WBH + 18, "text-anchor": "middle", class: "tick" }, wf);
+    wt.textContent = fmt(t);
+  });
+  var wte = el("text", { x: x(280.4), y: WBARY + WBH + 18, "text-anchor": "end", class: "tick" }, wf);
+  wte.textContent = "4:40";
+  WF.forEach(function (seg) {
+    var x1 = x(seg.s), x2 = x(seg.e), wpx = x2 - x1 - 2; // 2px surface gap
+    if (wpx < 1) { wpx = Math.max(x2 - x1, 2); }
+    var rect = el("rect", { x: x1, y: WBARY, width: Math.max(wpx, 2), height: WBH, rx: 3,
+      fill: CATS[seg.cat].color, class: "bar", tabindex: 0 }, wf);
+    var r = { label: "chain segment", why: "Serialized step of the critical chain. " +
+      (seg.label ? seg.label + ". " : "") + "Hover the timeline above for the full story of this period.",
+      crit: true, marker: undefined, segs: [seg] };
+    hook(rect, r, seg);
+    if (seg.label && x2 - x1 > 46) {
+      var lt = el("text", { x: x1 + (x2 - x1) / 2, y: WBARY + 17, "text-anchor": "middle", class: "dur-in" }, wf);
+      lt.textContent = seg.label;
+    }
+  });
+  var cap = el("text", { x: ML, y: 14, class: "ref" }, wf);
+  cap.textContent = "the whole boot as one serial chain — 280.4s";
+})();
+</script>
